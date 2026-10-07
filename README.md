@@ -53,8 +53,35 @@ Paseo (ACP クライアント / @agentclientprotocol/sdk 0.17)
 | 変数 | 内容 |
 |---|---|
 | `PASEO_CMD_ACP_BIN` | 起動する Command Code の実行ファイル。既定はネイティブ Windows で [`cmdc`](https://commandcode.ai/docs/windows#on-native-windows)、それ以外で `cmd` |
+| `CMD_ZDR` | `1` で [Zero Data Retention](https://commandcode.ai/docs/resources/zdr) を有効にする。Command Code 本体がそのまま読み取る |
 
 Paseo の設定でプロバイダの `env` に指定できます。
+
+### Zero Data Retention (ZDR)
+
+Command Code の ZDR は起動時の環境変数 `CMD_ZDR` でのみ切り替わり、ACP からセッション中に変更する手段はありません。また Paseo はセッションごとにアダプタを起動するため、ZDR の有無は env だけが異なるプロバイダを2つ定義して、セッション作成時にプロバイダで選びます。作成後のセッションで切り替えることはできません。
+
+```json
+{
+  "agents": {
+    "providers": {
+      "cmd": {
+        "extends": "acp",
+        "label": "Command Code",
+        "command": ["npx", "-y", "github:mohemohe/paseo-cmd-acp"]
+      },
+      "cmd-zdr": {
+        "extends": "acp",
+        "label": "Command Code (ZDR)",
+        "command": ["npx", "-y", "github:mohemohe/paseo-cmd-acp"],
+        "env": { "CMD_ZDR": "1" }
+      }
+    }
+  }
+}
+```
+
+ZDR に対応する上流が無いモデルではリクエストが失敗します (`422 cmd_zdr_no_providers`)。料金は通常より高くなる場合があります。
 
 ## モード
 
