@@ -1,36 +1,38 @@
 # paseo-cmd-acp
 
-[Paseo](https://github.com/getpaseo/paseo) から [Command Code](https://commandcode.ai/) (`cmd`) を使うための ACP 互換アダプタです。
+[日本語](README.ja.md)
 
-Paseo の汎用 ACP プロバイダ (`extends: "acp"`) と `cmd acp` の間に入り、stdio 上の JSON-RPC (NDJSON) を中継しながら、両者の解釈の差を埋めます。認証・モデル・ツール・MCP・推論はすべて Command Code 本体が処理します。
+An ACP compatibility adapter for using [Command Code](https://commandcode.ai/) (`cmd`) from [Paseo](https://github.com/getpaseo/paseo).
+
+It sits between Paseo's generic ACP provider (`extends: "acp"`) and `cmd acp`, relaying JSON-RPC (NDJSON) over stdio while bridging the differences in how the two sides interpret the protocol. Authentication, models, tools, MCP, and inference are all handled by Command Code itself.
 
 ```text
-Paseo (ACP クライアント / @agentclientprotocol/sdk 0.17)
-  -> paseo-cmd-acp (互換レイヤー)
-  -> cmd acp (ACP エージェント。Windows では cmdc acp)
+Paseo (ACP client / @agentclientprotocol/sdk 0.17)
+  -> paseo-cmd-acp (compatibility layer)
+  -> cmd acp (ACP agent; cmdc acp on Windows)
 ```
 
-## 互換レイヤーが行うこと
+## What the compatibility layer does
 
-| 問題 | 対応 |
+| Problem | Fix |
 |---|---|
-| モデルや effort を変えると、Paseo がモード一覧を configOptions から作り直してモードが空になり、以降モード切り替えが失敗する | configOptions に `mode` カテゴリの選択肢を補う |
-| `session/prompt` の `usage` がセッション累積値で、Paseo がそれをターン使用量として表示する | `_meta.usage` のターン使用量に置き換える |
-| 編集ツールの完了通知で diff が結果テキストに置き換わり、Paseo で差分が消える | 最初の diff を保持し、結果テキストを取り除く |
-| ツール失敗時のエラーが content にしか無く、Paseo では "Tool call failed" と表示される | エラーテキストを `rawOutput.message` に複写する |
-| シェル結果の終了コードが出力先頭の `Exit code: N` 行にしか無い | `rawOutput.exitCode` に移す |
-| ACP には system prompt を渡す経路が無く、Paseo で設定した systemPrompt / daemon の appendSystemPrompt が届かない | 新規セッションの最初のプロンプトの先頭に注入し、履歴の再生時には取り除く |
-| アダプタ側で起動に失敗・異常終了すると、Paseo が `initialize` 等の応答を待ち続けて固まる | 応答待ちの要求すべてに JSON-RPC エラーを返す |
+| When the model or effort is changed, Paseo rebuilds the mode list from configOptions, the modes become empty, and subsequent mode switches fail | Supplies `mode` category options in configOptions |
+| `usage` in `session/prompt` is the cumulative session value, and Paseo displays it as per-turn usage | Replaces it with the per-turn usage from `_meta.usage` |
+| On edit tool completion notifications, the diff is replaced by the result text and the diff disappears in Paseo | Keeps the first diff and removes the result text |
+| On tool failure, the error exists only in content, so Paseo shows "Tool call failed" | Copies the error text into `rawOutput.message` |
+| The exit code of shell results exists only as an `Exit code: N` line at the top of the output | Moves it to `rawOutput.exitCode` |
+| ACP has no way to pass a system prompt, so the systemPrompt configured in Paseo and the daemon's appendSystemPrompt never arrive | Injects it at the beginning of the first prompt of a new session, and strips it when replaying history |
+| If the adapter fails to start or exits abnormally, Paseo hangs waiting for responses to `initialize` and other requests | Returns a JSON-RPC error for every pending request |
 
-## 必要なもの
+## Requirements
 
-- Node.js 22 以上
-- Command Code (`npm i -g command-code`) と `cmd login` (Windows では `cmdc login`) 済みのアカウント
+- Node.js 22 or later
+- Command Code (`npm i -g command-code`) and an account logged in with `cmd login` (`cmdc login` on Windows)
 - Paseo
 
-## Paseo の設定
+## Paseo configuration
 
-`~/.paseo/config.json` (または `$PASEO_HOME/config.json`) にプロバイダを追加し、Paseo のデーモンを再起動します。
+Add a provider to `~/.paseo/config.json` (or `$PASEO_HOME/config.json`) and restart the Paseo daemon.
 
 ```json
 {
@@ -46,20 +48,20 @@ Paseo (ACP クライアント / @agentclientprotocol/sdk 0.17)
 }
 ```
 
-ローカルに clone したものを使う場合は `"command": ["node", "/path/to/paseo-cmd-acp/dist/main.js"]` を指定します。
+To use a local clone, specify `"command": ["node", "/path/to/paseo-cmd-acp/dist/main.js"]`.
 
-### 環境変数
+### Environment variables
 
-| 変数 | 内容 |
+| Variable | Description |
 |---|---|
-| `PASEO_CMD_ACP_BIN` | 起動する Command Code の実行ファイル。既定はネイティブ Windows で [`cmdc`](https://commandcode.ai/docs/windows#on-native-windows)、それ以外で `cmd` |
-| `CMD_ZDR` | `1` で [Zero Data Retention](https://commandcode.ai/docs/resources/zdr) を有効にする。Command Code 本体がそのまま読み取る |
+| `PASEO_CMD_ACP_BIN` | The Command Code executable to launch. Defaults to [`cmdc`](https://commandcode.ai/docs/windows#on-native-windows) on native Windows and `cmd` elsewhere |
+| `CMD_ZDR` | Set to `1` to enable [Zero Data Retention](https://commandcode.ai/docs/resources/zdr). Read directly by Command Code itself |
 
-Paseo の設定でプロバイダの `env` に指定できます。
+These can be set in the provider's `env` in the Paseo configuration.
 
 ### Zero Data Retention (ZDR)
 
-Command Code の ZDR は起動時の環境変数 `CMD_ZDR` でのみ切り替わり、ACP からセッション中に変更する手段はありません。また Paseo はセッションごとにアダプタを起動するため、ZDR の有無は env だけが異なるプロバイダを2つ定義して、セッション作成時にプロバイダで選びます。作成後のセッションで切り替えることはできません。
+Command Code's ZDR can only be toggled by the `CMD_ZDR` environment variable at startup; there is no way to change it during a session via ACP. Also, since Paseo launches the adapter per session, define two providers that differ only in `env` and choose ZDR on or off by selecting the provider when creating a session. It cannot be switched for an already created session.
 
 ```json
 {
@@ -81,32 +83,32 @@ Command Code の ZDR は起動時の環境変数 `CMD_ZDR` でのみ切り替わ
 }
 ```
 
-ZDR に対応する上流が無いモデルではリクエストが失敗します (`422 cmd_zdr_no_providers`)。料金は通常より高くなる場合があります。
+Requests fail for models with no ZDR-compatible upstream (`422 cmd_zdr_no_providers`). Pricing may be higher than usual.
 
-## モード
+## Modes
 
-モードは Command Code が返すものをそのまま使います。
+Modes are used as returned by Command Code.
 
-| id | 内容 |
+| id | Description |
 |---|---|
-| `default` | 変更を伴うツールの実行前に確認する |
-| `auto-accept` | ファイル編集は自動承認し、危険な操作は確認する |
-| `plan` | 調査と計画のみ (編集・コマンド実行なし) |
-| `dont-ask` | 確認なしで実行する (安全装置は維持) |
-| `bypass` | すべての権限確認を省略する |
+| `default` | Asks for confirmation before running tools that make changes |
+| `auto-accept` | Automatically approves file edits, asks for confirmation on dangerous operations |
+| `plan` | Investigation and planning only (no edits or command execution) |
+| `dont-ask` | Runs without confirmation (safeguards remain in place) |
+| `bypass` | Skips all permission checks |
 
-Paseo の Auto Accept を有効にした場合は、Paseo 側が権限確認に自動で応答します。
+When Paseo's Auto Accept is enabled, Paseo automatically responds to permission requests.
 
-## 開発
+## Development
 
 ```bash
 npm install
-npm test        # 型チェックとユニットテスト
-npm run build   # dist/ を生成
+npm test        # type check and unit tests
+npm run build   # generate dist/
 ```
 
-`npx github:...` でのインストール時にビルドが走らないよう、`dist/` はリポジトリにコミットしています。`npm install` で [lefthook](https://lefthook.dev/) の pre-commit フックが入り、`src/` などを含むコミットでは自動でビルドして `dist/` をコミットに含めます。ビルドは作業ツリーの内容から行うため、一部だけステージしたコミットでは未ステージの変更も `dist/` に反映される点に注意してください。
+`dist/` is committed to the repository so that no build runs when installing via `npx github:...`. `npm install` installs a [lefthook](https://lefthook.dev/) pre-commit hook that automatically builds and includes `dist/` in commits that touch `src/` and similar paths. Note that the build uses the working tree contents, so for partially staged commits, unstaged changes are also reflected in `dist/`.
 
-## ライセンス
+## License
 
 MIT
