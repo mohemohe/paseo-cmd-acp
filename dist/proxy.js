@@ -1,0 +1,156 @@
+import { ModeCompat } from "./compat/modes.js";
+import { prependContext, stripContextFromUserChunk } from "./compat/paseo-context.js";
+import { ToolCallCompat } from "./compat/tool-calls.js";
+import { rewritePromptUsage } from "./compat/usage.js";
+import { idKey, isJsonRpcMessage, isNotification, isRecord, isRequest, isResponse, } from "./json-rpc.js";
+/**
+ * Paseo (ACP クライアント) と `command-code acp` (ACP エージェント) の間に入り、
+ * 1 行 1 メッセージの JSON-RPC を必要な箇所だけ書き換えて中継する。
+ */
+export class AcpCompatProxy {
+    options;
+    pending = new Map();
+    toolCalls = new ToolCallCompat();
+    modes = new ModeCompat();
+    /** session/new で作られ、まだ最初のプロンプトを送っていないセッション */
+    freshSessions = new Set();
+    systemContext = null;
+    constructor(options) {
+        this.options = options;
+    }
+    /** Paseo → エージェント。プロンプトへのコンテキスト注入があるため非同期。 */
+    async fromClient(line) {
+        const message = parse(line);
+        if (!message || !isRequest(message)) {
+            return line;
+        }
+        const method = message.method;
+        this.pending.set(idKey(message.id), { id: message.id ?? null, method, params: isRecord(message.params) ? message.params : {} });
+        if (method === "session/prompt" && isRecord(message.params)) {
+            const sessionId = message.params.sessionId;
+            if (typeof sessionId === "string" && this.freshSessions.delete(sessionId)) {
+                const context = await this.loadSystemContextOnce();
+                if (context) {
+                    return JSON.stringify({ ...message, params: prependContext(message.params, context) });
+                }
+            }
+        }
+        return line;
+    }
+    /**
+     * エージェントが応答できなくなったとき、応答待ちの要求すべてに返すエラー応答を作る。
+     * Paseo の ACP SDK は接続が切れても応答待ちを reject しないため、返さないと initialize 等で固まる。
+     */
+    failPendingRequests(reason) {
+        const lines = [...this.pending.values()].map((request) => errorResponse(request.id, reason));
+        this.pending.clear();
+        return lines;
+    }
+    /** エージェント → Paseo */
+    fromAgent(line) {
+        const message = parse(line);
+        if (!message) {
+            return line;
+        }
+        if (isResponse(message)) {
+            return this.rewriteResponse(message) ?? line;
+        }
+        if (isNotification(message) && message.method === "session/update") {
+            return this.rewriteSessionUpdate(message) ?? line;
+        }
+        return line;
+    }
+    rewriteResponse(message) {
+        const key = idKey(message.id);
+        const request = this.pending.get(key);
+        if (!request) {
+            return null;
+        }
+        this.pending.delete(key);
+        if (!("result" in message) || !isRecord(message.result)) {
+            return null;
+        }
+        const result = message.result;
+        const requestSessionId = typeof request.params.sessionId === "string" ? request.params.sessionId : null;
+        switch (request.method) {
+            case "session/new": {
+                if (typeof result.sessionId !== "string")
+                    return null;
+                this.freshSessions.add(result.sessionId);
+                return this.replaceResult(message, this.modes.applySessionResult(result.sessionId, result));
+            }
+            case "session/load":
+            case "session/resume":
+                if (!requestSessionId)
+                    return null;
+                return this.replaceResult(message, this.modes.applySessionResult(requestSessionId, result));
+            case "session/set_mode":
+                if (requestSessionId && typeof request.params.modeId === "string") {
+                    this.modes.setCurrentMode(requestSessionId, request.params.modeId);
+                }
+                return null;
+            case "session/set_config_option":
+                if (!requestSessionId || !Array.isArray(result.configOptions))
+                    return null;
+                return this.replaceResult(message, {
+                    ...result,
+                    configOptions: this.modes.withModeOption(requestSessionId, result.configOptions),
+                });
+            case "session/prompt":
+                return this.replaceResult(message, rewritePromptUsage(result));
+            default:
+                return null;
+        }
+    }
+    replaceResult(message, result) {
+        return result === message.result ? null : JSON.stringify({ ...message, result });
+    }
+    rewriteSessionUpdate(message) {
+        const params = message.params;
+        if (!isRecord(params) || !isRecord(params.update)) {
+            return null;
+        }
+        const update = params.update;
+        const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+        let next;
+        switch (update.sessionUpdate) {
+            case "current_mode_update":
+                if (typeof update.currentModeId === "string") {
+                    this.modes.setCurrentMode(sessionId, update.currentModeId);
+                }
+                return null;
+            case "config_option_update":
+                if (!Array.isArray(update.configOptions))
+                    return null;
+                next = { ...update, configOptions: this.modes.withModeOption(sessionId, update.configOptions) };
+                break;
+            case "tool_call":
+            case "tool_call_update":
+                next = this.toolCalls.transform(update);
+                break;
+            case "user_message_chunk":
+                next = stripContextFromUserChunk(update);
+                break;
+            default:
+                return null;
+        }
+        return next === update ? null : JSON.stringify({ ...message, params: { ...params, update: next } });
+    }
+    loadSystemContextOnce() {
+        this.systemContext ??= this.options.loadSystemContext().catch(() => "");
+        return this.systemContext;
+    }
+}
+function parse(line) {
+    try {
+        const value = JSON.parse(line);
+        return isJsonRpcMessage(value) ? value : null;
+    }
+    catch {
+        return null;
+    }
+}
+const INTERNAL_ERROR = -32603;
+export function errorResponse(id, message) {
+    return JSON.stringify({ jsonrpc: "2.0", id, error: { code: INTERNAL_ERROR, message } });
+}

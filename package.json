@@ -1,0 +1,41 @@
+{
+  "name": "paseo-cmd-acp",
+  "version": "0.1.0",
+  "description": "Paseo ACP compatibility adapter for Command Code (cmd acp)",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "paseo-cmd-acp": "dist/main.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "bootstrap": "npm ci && lefthook install",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "npm run typecheck && vitest run"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "lefthook": "^2.1.17",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mohemohe/paseo-cmd-acp.git"
+  },
+  "keywords": [
+    "acp",
+    "paseo",
+    "command-code",
+    "agent"
+  ]
+}
